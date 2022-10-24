@@ -1,0 +1,1199 @@
+#!/bin/bash
+
+#
+#	This script is used to create and manage sheduled btrfs snapshots and sheduled btrfs snapshot synchronisation.
+#	It serves as a frontend to nachoparkers scripts but has limited options:
+#	The frequency and retention of snapshots is predefined to 24 hourly, 7 daily, 4 weekly and 12 monthly snapshots.
+#	Snapshots that don't exist in the source directory will be deleted from the destination directory.
+#	Doesn't support synchronisation through SSH
+#	
+#	Copyleft 2022 by Benedikt Thiemer <b _d_o_t_ 2 _a_t_ posteo _d_o_t_ de>
+#	GPL licensed (see end of file) * Use at your own risk!
+#	
+#	Based on two scripts from nachoparker:
+#	nc-snapshot-auto https://github.com/nextcloud/nextcloudpi/blob/master/bin/ncp/BACKUPS/nc-snapshot-auto.sh
+#	nc-snapshot-sync https://github.com/nextcloud/nextcloudpi/blob/master/bin/ncp/BACKUPS/nc-snapshot-sync.sh
+#
+#	Uses these two scripts from nachoparker:
+#	btrfs-snp https://github.com/nachoparker/btrfs-snp/blob/master/btrfs-snp
+#	btrfs-sync https://github.com/nachoparker/btrfs-sync/blob/master/btrfs-sync
+#	
+
+#You can enter custom directories here. Beware that it must not end with a /
+script_dir=/usr/local/bin #default is /usr/local/bin
+log_dir=/var/log/snapshot-manager #default is /var/log/snapshot-manager
+timestamp_script=/usr/local/bin/timestamp #default ist /usr/local/bin/timestamp 
+
+if [[ "$EUID" -ne 0 ]]; then
+	echo ""
+	echo "This script must be run as root." 
+	echo "Otherwise the sheduled snapshot jobs cannot be created."
+	echo ""
+	exit 1
+fi
+
+__add () 
+{
+	#Preparation
+	if [[ "$1" = "sync" ]]
+	then
+		type="${1}"
+		if [[ -z "$2" ]]
+		then
+			__list "all" "snp" #list snapshot creation jobs to create a synchronisation job from them
+			echo "Choose a snapshot tag from the above list."
+			tag="$(__get_tag "sync")"
+		else
+			tag="$2"
+		fi
+		
+	elif [[ "$1" = "snp" ]]
+	then
+		type="${1}"
+		if [[ -z "$2" ]]
+		then
+			echo "Choose a snapshot tag that doesn't exist yet."
+			__list "all" "snp"
+			tag="$(__get_tag "snp")"
+		else
+			tag="$2"
+		fi
+		
+	elif [[ -z "$1" ]]
+	then
+		type="$(__get_type "snp|sync")"
+		tag="$(__get_tag "$type")"
+	fi
+	
+	type_name="$(__get_type_name "$type")"
+	
+	#Perform checks and then add the job
+	if [[ -f "/etc/cron.d/$tag-sheduled-$type" ]]
+	then
+		echo "A sheduled snapshot $type_name job with this tag already exists."
+		return 1
+		
+	elif [[ -f "/etc/cron.d/$tag-sheduled-$type.disabled" ]]
+	then
+		echo "A disabled sheduled $type_name job with this tag already exists."
+		read -p 'Do you want to enable it? (y/n)' -n 1 -r
+		echo ""
+		
+		if [[ "$REPLY" =~ ^^[Yy]$ ]]
+		then
+			sed -i '1,5 s/^#//' "/etc/cron.d/$tag-sheduled-$type.disabled" #remove one # in front of every line
+			mv "/etc/cron.d/$tag-sheduled-$type.disabled" "/etc/cron.d/$tag-sheduled-$type"
+			echo "Snapshot $type_name job \"$tag\" enabled."
+			return 0
+			
+		else
+			echo ""
+			return 1
+		fi
+		
+	elif [[ "$type" = "sync" ]]
+	then
+		__add_sync "$type" "$tag"
+		
+	elif [[ "$type" = "snp" ]]
+	then	
+		__add_snp "$type" "$tag"
+	fi
+}
+
+__add_snp ()
+{
+
+type="$1"
+tag="$2"
+
+echo "Please make sure that the source directory is in a BTRFS"
+read -e -p 'Select source directory for the sheduled snapshot creation job: ' snpsource
+snpsource="${snpsource%/}"
+
+if __check_fs "$snpsource"
+then
+	echo "Snapshots will be stored in the subfolder $tag-snp in the destination directory."
+	read -e -p 'Select destination-directory: ' snpdest
+	snpdest="${snpdest%/}"
+	
+	if __check_fs "$snpdest"
+	then
+
+		cat > "/etc/cron.d/$tag-sheduled-$type" <<-EOF
+#from $snpsource
+#to $snpdest/$tag-snp
+0 * * * * root $script_dir/btrfs-snp $snpsource $tag-hourly  24 3600     $snpdest/$tag-snp 2>&1 | $timestamp_script >> $log_dir/$tag-creation.log
+0 * * * * root $script_dir/btrfs-snp $snpsource $tag-daily    7 86400   $snpdest/$tag-snp 2>&1 | $timestamp_script >> $log_dir/$tag-creation.log
+0 * * * * root $script_dir/btrfs-snp $snpsource $tag-weekly   4 604800   $snpdest/$tag-snp 2>&1 | $timestamp_script >> $log_dir/$tag-creation.log
+0 * * * * root $script_dir/btrfs-snp $snpsource $tag-monthly 12 2592000  $snpdest/$tag-snp 2>&1 | $timestamp_script >> $log_dir/$tag-creation.log
+		EOF
+		chmod +x "/etc/cron.d/$tag-sheduled-$type"
+		
+		if [[ -f "/etc/cron.d/$tag-sheduled-$type" ]]
+		then
+			echo "Added the sheduled snapshot $type_name job \"$tag\":"
+			echo "/etc/cron.d/$tag-sheduled-$type"
+			return 0
+		else
+			echo "Could not add the sheduled snapshot $type_name job \"$tag\":"
+			echo "/etc/cron.d/$tag-sheduled-$type"
+			return 1
+		fi
+	else
+		return 1
+	fi
+else
+	return 1
+fi
+}
+ 
+__add_sync () #add the snapshot synchronisation job with tag
+{
+
+type="$1"
+tag="$2"
+
+if [[ -f "/etc/cron.d/$tag-sheduled-snp" ]] #check if the specified snapshot creation job really exists
+then
+	snplocation="$(awk -v line=2 'NR == line {print $2; exit}' /etc/cron.d/$tag-sheduled-snp)"
+	ed="enabled"
+	
+elif [[ -f "/etc/cron.d/$tag-sheduled-snp.disabled" ]]
+then
+	snplocation="$(awk -v line=2 'NR == line {print $2; exit}' /etc/cron.d/$tag-sheduled-snp.disabled)"
+	ed="disabled"
+	
+else
+	echo "This snapshot creation job does not exist."
+	return 1
+fi
+	echo "Creating a sheduled synchronisation job for this $ed snapshot creation job: $tag"
+	echo "The snapshot it creates are stored here:"
+	echo "$snplocation"
+	
+	if ! __get_confirmation
+	then
+		return 1
+	fi
+
+#ask the user for the desired destination and create a job if the BTRFS check passes
+read -e -p 'Please input the sync destination (has to be in a BTRFS): ' syncdest
+syncdest="${syncdest%/}"
+
+if __check_fs "$syncdest"
+then
+	entries=0
+	for entry  in /etc/cron.d/*-sheduled-sync
+	do
+	[ -e "$entry" ] || continue
+	entries=$((entries + 1))
+	done
+	
+	read -e -p 'Please input snapshot synchronisation interval in days: ' syncinterval
+	
+	while ! [[ "$syncinterval" =~ ^[0-9]+$ ]]
+	do
+		echo "Please input a number."
+		echo ""
+		read -e -p 'Please input snapshot synchronisation interval in days: ' syncinterval
+	done
+	
+	
+	while ! [[ "$start_hour" =~ ^[0-9]+$ ]]
+	do
+		if [ "$entries" -gt "23" ]
+		then
+			echo "---"
+			echo "Note: There are already over 23 synchronisation jobs. As they are set to execute one per hour, adding more could prevent some executions."
+			echo "---"
+			read -e -p 'Please choose a synchronisation hour: ' start_hour
+		else
+			echo "---"
+			echo "Note: Only one synchronisation job can be executed at a time."
+			echo "---"
+			read -e -p 'You may choose a synchronisation hour, leave empty for default [00:30 + 1h per existing sync job]: ' hour
+			start_hour="${hour:-$entries}"
+		fi
+	done
+	
+	cat > "/etc/cron.d/$tag-sheduled-$type" <<-EOF
+#from $snplocation
+#to $syncdest
+30  $start_hour  */${syncinterval}  *  *  root  $script_dir/btrfs-sync -dv "$snplocation" "$syncdest" 2>&1 | $timestamp_script >> $log_dir/$tag-sync.log
+	EOF
+	chmod +x "/etc/cron.d/$tag-sheduled-$type"
+	service cron restart
+	
+	if [[ -f "/etc/cron.d/$tag-sheduled-$type" ]]
+	then
+		echo "Added the sheduled snapshot $type_name job \"$tag\": /etc/cron.d/$tag-sheduled-$type"
+		return 0
+	else
+		echo "Could not add the sheduled snapshot $type_name job \"$tag\": /etc/cron.d/$tag-sheduled-$type"
+		return 1
+	fi
+fi
+}
+
+__check_fs () #checks whether the directory exists and is in a btrfs
+{
+		if [[ -d "$1" ]]
+		then
+			if [ "$(stat -fc%T $1 )" != btrfs ]
+			then
+					echo "$1 is not in a BTRFS"
+					return 1
+			else
+					return 0
+			fi
+		else
+			echo "$1 does not exist."
+			return 1
+		fi
+}
+
+__disable () #disables a sheduled snapshot job based on user input
+{
+	if [[ -z "$1" ]]
+	then
+		if __list_enabled "all" > /dev/null 2>&1
+		then
+			if __list_enabled_snp > /dev/null 2>&1 && __list_enabled_sync > /dev/null 2>&1
+			then
+				__list_enabled "all"
+				type="$(__get_type "snp|sync")"
+			elif __list_enabled_snp > /dev/null 2>&1 
+			then
+				type="snp"
+				__list_enabled_snp
+			elif __list_enabled_sync > /dev/null 2>&1
+			then
+				type="sync"
+				__list_enabled_sync
+			else
+				__list_enabled "all"
+				type="$(__get_type "snp|sync")"
+			fi
+		else
+			return 1
+		fi
+	else
+		type="$1"
+	fi
+	
+	if [[ -z "$2" ]]
+	then
+		if __list_enabled "$type" > /dev/null 2>&1
+		then
+			if [[ -n "$1" ]]
+			then
+				__list_enabled "$type"
+			fi
+			tag=$(__get_tag "$type")
+		else
+			__list_disabled "$type"
+			return 1
+		fi
+	else
+		tag="$2"
+	fi
+	
+	type_name="$(__get_type_name "$type")"
+		
+	if [[ -f "/etc/cron.d/$tag-sheduled-$type" ]] #if an enabled version exists
+	then
+		echo "Disabling sheduled $type_name job \"$tag\"."
+		if __get_confirmation
+		then
+			sed -i '1,5 s/^/#/' "/etc/cron.d/$tag-sheduled-$type" #add a # to every line of the crontab job
+			mv "/etc/cron.d/$tag-sheduled-$type" "/etc/cron.d/$tag-sheduled-$type.disabled"
+			echo "Snapshot $type_name job \"$tag\" disabled."
+			return 0
+		else
+			return 1
+		fi
+	elif [[ -f "/etc/cron.d/$tag-sheduled-$type.disabled" ]]
+	then
+		echo "Snapshot $type_name job \"$tag\" already disabled."
+		return 1
+	else
+		echo "Snapshot $type_name job \"$tag\" does not exist."
+		return 1
+	fi
+}
+
+__enable () #enables a sheduled snapshot job based on user input
+{
+	if [[ -z "$1" ]]
+	then
+		if __list_disabled "all" > /dev/null 2>&1
+		then
+			if __list_disabled_snp > /dev/null 2>&1 && __list_disabled_sync > /dev/null 2>&1
+			then
+				__list_disabled "all"
+				type="$(__get_type "snp|sync")"
+			elif __list_disabled_snp > /dev/null 2>&1 
+			then
+				type="snp"
+				__list_disabled_snp
+			elif __list_disabled_sync > /dev/null 2>&1
+			then
+				type="sync"
+				__list_disabled_sync
+			else
+				__list_disabled "all"
+				type="$(__get_type "snp|sync")"
+			fi
+		else
+			return 1
+		fi
+	else
+		type="$1"
+	fi
+	
+	type_name="$(__get_type_name "$type")"
+	
+	if [[ -z "$2" ]]
+	then
+		if __list_disabled "$type" > /dev/null 2>&1
+		then
+			if [[ -n "$1" ]]
+			then
+			__list_disabled "$type"
+			fi			
+			tag=$(__get_tag "$type")
+		else
+			__list_disabled "$type"
+			return 1
+		fi
+	else
+		tag="$2"
+	fi
+	
+	
+	if [[ -f "/etc/cron.d/$tag-sheduled-$type.disabled" ]] #if a disabled version exists
+	then
+		echo "Enabling sheduled $type_name job \"$tag\"."
+		
+		if __get_confirmation
+		then
+			sed -i '1,5 s/^#//' "/etc/cron.d/$tag-sheduled-$type.disabled" #remove one # in front of every line
+			mv "/etc/cron.d/$tag-sheduled-$type.disabled" "/etc/cron.d/$tag-sheduled-$type"
+			echo "Snapshot $type_name job \"$tag\" enabled."
+			return 0
+		else
+			return 1
+		fi
+	elif [[ -f "/etc/cron.d/$tag-sheduled-$type" ]]
+	then
+		echo "Snapshot $type_name job \"$tag\" already enabled."
+		return 1
+	else
+		echo "Snapshot $type_name job \"$tag\" does not exist."
+		return 1
+	fi
+}
+
+__fix_permissions () #making the sheduled snapshot job scripts in /etc/cron.d/ executable
+{
+	echo "Executing chmod +x on all created snapshot jobs in /etc/cron.d/"
+	
+	if __get_confirmation
+	then
+		chmod +x "/etc/cron.d/*-sheduled-snp*"
+		chmod +x "/etc/cron.d/*-sheduled-sync*"
+		return 0
+	else
+		return 1
+	fi
+}
+
+__get_confirmation () #require user confirmation to continue
+{
+	read -p 'Continue? (y/n)' -n 1 -r
+	if [[ "$REPLY" =~ ^^[Yy]$ ]]
+	then
+		echo ""
+		return 0
+	else
+		echo ""
+		return 1
+	fi
+}
+
+
+__get_tag () #Ask the user for a snapshot job tag. If needed, it will list all snapshot tags of the specified type.
+{	
+	read -e -p "Please input a tag: " tag
+	echo "$tag"
+	
+	#if [[ -f "/etc/cron.d/$tag-sheduled-*" ]]
+	#then
+	#	echo "A snapshot job with this tag already exists."
+	#	echo ""
+	#	__get_tag
+	#	
+	#elif [[ "$tag" = " There are no enabled snapshot creation jobs." || "$tag" = " There are no enabled snapshot synchronisation jobs." || "$tag" = " There are no disabled snapshot creation jobs." || "$tag" = " There are no disabled snapshot creation jobs." ]]
+	#then
+	#	echo "This tag is not available."
+	#	
+	#else
+	#	echo "$tag"
+	#fi
+}
+
+
+__get_type () #Ask the user for a snapshot job type. Accepts the arguments 'snp|sync|all' and 'snp|sync'
+{
+	if [[ "$1" = "snp|sync|all" ]]
+	then
+		prompt_p2="you want to list [snp|sync|all]: "
+		
+	elif [[ "$1" = "snp|sync" ]]
+	then
+		prompt_p2="[snp|sync]: "
+	else
+		echo "This function needs at least one of these arguments: 'snp|sync|all' or 'snp|sync'"
+		return 1
+	fi
+	
+	if [[ "$2" = "invalid" ]]
+	then
+		prompt_p1="Please input a valid snapshot job type"
+		
+	else
+		prompt_p1="Please input the snapshot job type"
+	fi
+	
+	read -e -p "$prompt_p1 $prompt_p2" type
+	
+	if ! [[ "$type" =~ ^($1)$ ]]
+	then
+		__get_type "$1" "invalid"
+	else
+		echo "$type"
+		return 0
+	fi
+}
+
+#
+__get_type_name () #provides other functions with the correct string for the messages
+{
+	case "$1" in
+		(snp)	echo "creation";;
+		(sync)	echo "synchronisation";;
+	esac
+}
+
+#
+__help () 
+{
+	echo "This script lets you create and manage cron-jobs for sheduled creation and synchronisation of btrfs-snapshots."
+	echo "Usage: snapshot-manager [options] [snp|sync|all [tag]]"
+	echo ""
+	echo "Example:" 
+	echo "snapshot-manager -d sync backup"
+	echo "(Disable snapshot synchronisation job with the tag 'backup')"
+	echo ""
+	echo "Options:"
+	echo "Long Option	Option	[arguments]		Description"
+	echo "add		-a	[snp|sync [tag]]	add an automatic snapshot job with tag"
+	echo "dependencies	-D				list the required scripts"
+	echo "disable		-d 	[snp|sync [tag]]	disable an enabled snapshot job"
+	echo "enable		-e	[snp|sync [tag]]	enable a disabled snapshot job"
+	echo "fix-permissions	-f	[snp|sync]		sets correct permission for the cron-jobs of this script"
+	echo "help		-h				display this help"
+	echo "install		-i				(re)install the required scripts (see dependencies or -D)"
+	echo "list		-l	[snp|sync|all]		list snapshot jobs created by this script"
+	echo "remove		-r	[snp|sync [tag]]	remove a snapshot job"
+	echo "view		-v	[snp|sync [tag]]	view the content of a snapshot cron-job"
+	echo ""
+	echo "The argument 'snp' is used for snapshot creation jobs, 'sync' for synchronisation jobs."
+	echo ""
+	echo "You can change the default paths for the logfiles and scripts initially by editing this script."
+	echo "Currently these paths are:"
+	echo "logfiles - $log_dir"
+	echo "scripts - $script_dir"
+	
+	exit 0
+}
+
+__install_btrfs-snp () #download the btrfs-snp script from github to $script_dir
+{
+	wget https://raw.githubusercontent.com/nachoparker/btrfs-snp/master/btrfs-snp -O "$script_dir/btrfs-snp"
+	chmod +x "$script_dir/btrfs-snp"
+	echo "Installed btrfs-snp."
+	return 0
+}
+
+__install_btrfs-sync ()#download the btrfs-sync script from github to $script_dir
+{
+	wget https://raw.githubusercontent.com/nachoparker/btrfs-sync/master/btrfs-sync -O "$script_dir/btrfs-sync"
+	chmod +x "$script_dir/btrfs-sync"
+	echo "Installed btrfs-sync"
+	return 0
+}
+
+__install_dependencies () #install dependencies one by one
+{
+	echo "---"
+	echo "For more information on the dependencies run \"snapshot-manager dependencies\" or \"snapshot-manager -D\"."
+	echo "---"
+	
+	if [[ -f "$script_dir/btrfs-snp" ]]
+	then
+		echo "btrfs-snp already exists in $script_dir. Overwriting it."
+	else
+		echo "Installing btrfs-snp script to $script_dir/btrfs-snp" 
+	fi
+	
+	if __get_confirmation
+	then
+		__install_btrfs-snp
+	fi
+	
+	if [[ -f "$script_dir/btrfs-sync" ]]
+	then
+		echo "btrfs-sync already exists in $script_dir. Overwriting it."
+	else
+		echo "Installing btrfs-sync script to $script_dir/btrfs-sync" 
+	fi
+	
+	if __get_confirmation
+	then
+		__install_btrfs-sync
+	fi
+	
+	if [[ -f "$timestamp_script" ]]
+	then
+		echo "timestamp already exists in $script_dir. Overwriting it."
+	else
+		echo "Installing timestamp script to $timestamp_script"
+	fi
+	
+	if __get_confirmation
+	then
+		__install_timestamp
+	fi
+	
+	if ! [[ -d "$log_dir" ]]
+	then
+		echo "Creating log directory: $log_dir"
+		if __get_confirmation
+		then
+			mkdir "$log_dir"
+			if [[ -d "$log_dir" ]]
+			then
+				echo "$log_dir created."
+			fi
+		fi
+	else
+		echo "Log directory $log_dir already exists. Skipping."
+	fi
+}
+
+__install_timestamp () # install the timestamp script
+{
+	cat > "$timestamp_script" <<-EOF
+#!/bin/bash
+while IFS= read -r line 
+do
+printf '%s %s %s\n' "$(date +"%Y-%m-%d %T")" "-"  "$line"
+done
+	EOF
+	chmod +x "$timestamp_script"
+	echo "Installed timestamp"
+	return 0
+}
+
+__list () 
+{
+	if [[ -z "$2" ]]
+	then
+		scope="$(__get_type "snp|sync|all")"
+	else
+		scope="$2"
+	fi
+	
+	if [[ "$1" = "enabled" ]]
+	then
+		__list_enabled "$scope"
+	elif [[ "$1" = "disabled" ]]
+	then
+		__list_disabled "$scope"
+	else
+		__list_all "$scope"
+	fi
+}
+
+__list_all () 
+{
+	if [[ "$1" = "snp" ]]
+	then
+		__list_all_snp
+		return 0
+	elif [[ "$1" = "sync" ]]
+	then
+		__list_all_sync
+		return 0
+	elif [[ "$1" = "all" ]]
+	then
+		if ! __list_all_snp > /dev/null 2>&1 && ! __list_all_sync > /dev/null
+		then
+			echo "There are no snapshot jobs created by this script."
+			return 1
+		else
+			__list_all_snp
+			__list_all_sync
+			return 0
+		fi
+	fi
+}
+
+
+__list_all_snp ()
+{
+	if __list_enabled_snp > /dev/null 2>&1 && __list_disabled_snp > /dev/null 2>&1
+	then
+		__list_enabled_snp
+		__list_disabled_snp
+		return 0
+	elif __list_enabled_snp > /dev/null 2>&1
+	then
+		__list_enabled_snp
+		echo "Disabled snapshot creation jobs: -."
+		return 0
+	elif __list_disabled_snp > /dev/null 2>&1
+	then
+		echo "Enabled snapshot creation jobs: -"
+		__list_disabled_snp
+		return 0
+	else
+		echo "There are no snapshot creation jobs."
+		return 1
+	fi
+}
+
+__list_all_sync ()
+{
+	if __list_enabled_sync > /dev/null 2>&1 && __list_disabled_sync > /dev/null 2>&1
+	then
+		__list_enabled_sync
+		__list_disabled_sync
+		return 0
+	elif __list_enabled_sync > /dev/null 2>&1
+	then
+		__list_enabled_sync
+		echo "Disabled snapshot synchronisation jobs: -"
+		return 0
+	elif __list_disabled_sync > /dev/null 2>&1
+	then
+		echo "Enabled snapshot synchronisation jobs: -"
+		__list_disabled_sync
+		return 0
+	else
+		echo "There are no snapshot synchronisation jobs."
+		return 1
+	fi
+}
+
+__list_enabled ()
+{
+	if [[ "$1" = "snp" ]]
+	then
+		if __list_enabled_snp > /dev/null 2>&1
+		then
+			__list_enabled_snp
+			return 0
+		else
+			echo "Enabled snapshot creation jobs: -"
+			return 1
+		fi
+	elif [[ "$1" = "sync" ]]
+	then
+		if __list_enabled_sync > /dev/null 2>&1
+		then
+			__list_enabled_sync
+			return 0
+		else
+			echo "Enabled snapshot synchronisation jobs: -"
+			return 1
+		fi
+	elif [[ "$1" = "all" ]]
+	then
+		if __list_enabled_snp > /dev/null 2>&1 && __list_enabled_sync > /dev/null 2>&1
+		then
+			__list_enabled_snp
+			__list_enabled_sync
+			return 0
+		elif __list_enabled_snp > /dev/null 2>&1
+		then
+			__list_enabled_snp
+			echo "Enabled snapshot synchronisation jobs: -"
+			return 0
+		elif __list_enabled_sync > /dev/null 2>&1
+		then
+			__list_enabled_sync
+			echo "Enabled snapshot creation jobs: -"
+			return 0
+		else
+			echo "There are no enabled snapshot jobs."
+			return 1
+		fi
+	fi
+}
+
+#list all enabled jobs. Takes snp, sync and all as argument
+__list_enabled_snp () #done.
+{
+	if compgen -G "/etc/cron.d/*-sheduled-snp" > /dev/null 2>&1
+	then
+		echo "Enabled snapshot creation jobs:"
+	
+		for entry in /etc/cron.d/*-sheduled-snp
+		do
+			#remove everything but the tag
+			echo "$entry" | cut -d'/' -f4- | sed 's/\-sheduled-snp//g'
+		done
+		echo ""
+		return 0
+	else
+		return 1
+	fi
+}
+
+#list all enabled jobs. Takes snp, sync and all as argument
+__list_enabled_sync () #done.
+{
+	if compgen -G "/etc/cron.d/*-sheduled-sync" > /dev/null 2>&1
+	then
+		echo "Enabled snapshot synchronisation jobs:"
+	
+		for entry in /etc/cron.d/*-sheduled-sync
+		do
+			#remove everything but the tag
+			echo "$entry" | cut -d'/' -f4- | sed 's/\-sheduled-sync//g'
+		done
+		echo ""
+		return 0
+	else
+		return 1
+	fi
+}
+
+#Output the Dependencies of this script and more information or where to find it
+__list_dependencies () #done.
+{
+	echo "Dependencies:"
+	echo "- cron"
+	echo "- logfolder $log_dir"
+	echo "- btrfs-snp script from nachoparker, downloaded to \"$script_dir/btrfs-snp\" from here:"
+	echo "  https://github.com/nachoparker/btrfs-snp/blob/master/btrfs-snp"
+	echo "- btrfs-sync script from nachoparker, downloaded to \"$script_dir/btrfs-sync\" from here:"
+	echo "  https://github.com/nachoparker/btrfs-sync/blob/master/btrfs-sync"
+	echo "- timestamp script, consisting in this code:"
+	echo "  #!/bin/bash" 
+	echo "  while read x"
+	echo "  do"
+	echo "  printf '%s %s %s\\n' \"\$(date +\"%Y-%m-%d %T\")\" \"-\"  \"\$line\""  
+	echo "  done"
+	echo 
+	echo "You can install these dependencies using \"snapshot-manager install\" or \"snapshot-manager -i\""
+	echo ""
+}
+
+__list_disabled ()
+{
+	if [[ "$1" = "snp" ]]
+	then
+		if __list_disabled_snp > /dev/null 2>&1
+		then
+			__list_disabled_snp
+			return 0
+		else
+			echo "Disabled snapshot creation jobs: -"
+			return 1
+		fi
+	elif [[ "$1" = "sync" ]]
+	then
+		if __list_disabled_sync > /dev/null 2>&1
+		then
+			__list_disabled_sync
+			return 0
+		else
+			echo "Disabled snapshot synchronisation jobs: -"
+			return 1
+		fi
+	elif [[ "$1" = "all" ]]
+	then
+		if __list_disabled_snp > /dev/null 2>&1 && __list_disabled_sync > /dev/null 2>&1
+		then
+			__list_disabled_snp
+			__list_disabled_sync
+			return 0
+		elif __list_disabled_snp > /dev/null 2>&1
+		then
+			__list_disabled_snp
+			echo "Disabled snapshot synchronisation jobs: -"
+			return 0
+		elif __list_disabled_sync > /dev/null 2>&1
+		then
+			__list_disabled_sync
+			echo "Disabled snapshot creation jobs: -"
+			return 0
+		else
+			echo "There are no disabled snapshot jobs."
+			return 1
+		fi
+	fi
+}
+
+#list all disabled jobs. Takes snp, sync and all as argument
+__list_disabled_snp () #done.
+{
+	
+	if compgen -G "/etc/cron.d/*-sheduled-snp.disabled" > /dev/null 2>&1
+	then
+		echo "Disabled snapshot creation jobs:"
+
+		for entry in /etc/cron.d/*-sheduled-snp.disabled
+		do
+			#remove everything but the tag
+			echo "$entry" | cut -d'/' -f4- | sed 's/\-sheduled-snp.disabled//g'
+		done
+		echo ""
+		return  0
+	else
+		return 1
+	fi
+}
+
+__list_disabled_sync () #done.
+{
+			
+	if compgen -G "/etc/cron.d/*-sheduled-sync.disabled" > /dev/null 2>&1
+	then
+		echo "Disabled snapshot synchronisation jobs:"
+
+		for entry in /etc/cron.d/*-sheduled-sync.disabled
+		do
+			#remove everything but the tag
+			echo "$entry" | cut -d'/' -f4- | sed 's/\-sheduled-sync.disabled//g'
+		done
+		echo ""
+		return 0
+	else
+		return 1
+	fi
+}
+
+
+__remove ()
+{
+	if [[ "$1" = "sync" ]]
+	then
+		type="$1"
+		
+		if [[ -z "$2" ]]
+		then
+			if __list_all_sync
+			then
+				echo "Choose the snapshot synchronisation job you want to remove."
+				tag="$(__get_tag "sync")"
+			else
+				return 1
+			fi
+		else
+			tag="$2"
+		fi
+		
+	elif [[ "$1" = "snp" ]]
+	then
+		type="$1"
+		
+		if [[ -z "$2" ]]
+		then
+			if __list_all_snp
+			then
+				echo "Choose the snapshot creation job you want to remove."
+				tag="$(__get_tag "snp")"
+			else
+				return 1
+			fi
+		else
+			tag="$2"
+		fi
+		
+	elif [[ -z "$1" ]]
+	then
+		if __list_all "all"
+		then
+			echo "Choose the type and tag of a sheduled snapshot job you want to remove."
+			type="$(__get_type "snp|sync")"
+			tag="$(__get_tag "$type")"
+		else
+			return 1
+		fi
+	fi
+
+	type_name="$(__get_type_name "$type")"
+	
+	if [[ -f "/etc/cron.d/$tag-sheduled-$type" ]]
+	then
+		echo "Removing the enabled sheduled snapshot $type_name job \"$tag\"." 
+		echo "This cannot be undone."
+		
+		if ! __get_confirmation
+		then
+			return 1
+		fi
+		rm -f "/etc/cron.d/$tag-sheduled-$type"
+		service cron restart
+		
+		if ! [[ -f "/etc/cron.d/$tag-sheduled-$type" ]]
+		then
+			echo "Removed the sheduled snapshot $type_name job \"$tag\"."
+			echo "(Was in /etc/cron.d/$tag-sheduled-$type)"
+		else
+			echo "Could not remove the sheduled snapshot $type_name job \"$tag\"."
+			echo "Is in /etc/cron.d/$tag-sheduled-$type"
+		fi
+		
+	elif [[ -f "/etc/cron.d/$tag-sheduled-$type.disabled" ]]
+	then
+		echo "Removing the disabled sheduled snapshot $type_name job \"$tag\"." 
+		echo "This cannot be undone."
+		if ! __get_confirmation
+		then
+			return 1
+		fi
+		rm -f "/etc/cron.d/$tag-sheduled-$type.disabled"
+		service cron restart
+		
+		if ! [[ -f "/etc/cron.d/$tag-sheduled-$type.disabled" ]]
+		then
+			echo "Removed the sheduled snapshot $type_name job \"$tag\"."
+			echo "(Was in /etc/cron.d/$tag-sheduled-$type.disabled)"
+		else
+			echo "Could not remove the sheduled snapshot $type_name job \"$tag\"."
+			echo "Is in /etc/cron.d/$tag-sheduled-$type"
+		fi
+	else
+		echo "This sheduled snapshot $type_name job doesn't exist."
+		return 1
+	fi
+}
+
+__uninstall_dependencies ()
+{
+	if [[ -f "$script_dir/btrfs-snp" ]]
+	then
+		echo "Removing the btrfs-snp script from: $script_dir/btrfs-snp"
+		if __get_confirmation
+		then
+			rm -f "$script_dir/btrfs-snp"
+			
+			if ! [[ -f "$script_dir/btrfs-snp" ]]
+			then
+				echo "btrfs-snp removed."
+			else
+				echo "Something went wrong. You may want to delete it manually."
+			fi
+		fi
+	else
+		echo "The btrfs-snp script does not exist in $script_dir" 
+	fi
+		
+	if [[ -f "$script_dir/btrfs-sync" ]]
+	then
+		echo "Removing the btrfs-sync script from: $script_dir/btrfs-sync"
+		
+		if __get_confirmation
+		then
+			rm -f "$script_dir/btrfs-sync"
+			
+			if ! [[ -f "$script_dir/btrfs-sync" ]]
+			then
+				echo "btrfs-sync removed."
+				
+			else
+				echo "Something went wrong. You may want to delete it manually."
+			fi
+		fi
+	else
+		echo "The btrfs-sync script does not exist in $script_dir" 
+	fi
+	
+	if [[ -f "$timestamp_script" ]]
+	then
+		echo "Removing the timestamp script from: $timestamp_script"
+		
+		if __get_confirmation
+		then
+			rm -f "$timestamp_script"
+			
+			if ! [[ -f "$timestamp_script" ]]
+			then
+				echo "timestamp removed."
+				
+			else
+				echo "Something went wrong. You may want to delete it manually."
+			fi
+		fi
+	else
+		echo "The timestamp script does not exist in $timestamp_script" 
+	fi
+	
+	if [[ -d "$log_dir" ]]
+	then
+		echo "Removing the log directory: $log_dir"
+		echo "This will also remove all logfiles and cannot be undone."
+		if __get_confirmation
+		then
+			rm -r "$log_dir"
+			
+			if ! [[ -d "$log_dir" ]]
+			then
+				echo "$log_dir removed."
+				
+			else
+				echo "Something went wrong. You may want to delete it manually."
+			fi
+		fi
+	else
+		echo "The log directory $log_dir does not exist."
+	fi
+}
+
+__view ()
+{
+	if [[ "$1" = "sync" ]]
+	then
+		type="${1}"
+		if [[ -z "$2" ]]
+		then
+			if __list_all "sync"
+			then
+				echo "Choose a snapshot tag from the above list."
+				tag="$(__get_tag "sync")"
+			else
+				return 1
+			fi
+		else
+			tag="$2"
+		fi
+		
+	elif [[ "$1" = "snp" ]]
+	then
+		type="${1}"
+		
+		if [[ -z "$2" ]]
+		then
+			if __list_all "snp"
+			then
+				echo "Choose a snapshot tag from the above list."
+				tag="$(__get_tag "snp")"
+			else
+				return 1
+			fi
+		else
+			tag="$2"
+		fi
+		
+	elif [[ -z "$1" ]]
+	then
+		if __list_all "all"
+		then
+			type="$(__get_type "snp|sync")"
+			tag="$(__get_tag "$type")"
+		else
+			return 1
+		fi
+	fi
+	
+	type_name="$(__get_type_name "$type")"
+	
+	if [[ -f "/etc/cron.d/$tag-sheduled-$type" ]]
+	then
+		echo "This sheduled snapshot $type_name job is enabled and located here:"
+		echo "/etc/cron.d/$tag-sheduled-$type"
+		echo "Content of this file:"
+		cat "/etc/cron.d/$tag-sheduled-$type"
+	elif [[ -f "/etc/cron.d/$tag-sheduled-$type.disabled" ]]
+	then
+		echo "This sheduled snapshot $type_name job is disabled and located here:"
+		echo "/etc/cron.d/$tag-sheduled-$type.disabled"
+		echo "Content of this file:"
+		cat "/etc/cron.d/$tag-sheduled-$type.disabled"
+	else
+		echo "This sheduled snapshot job does not exist."
+	fi
+}
+
+case "$1" in
+	(add|-a) 	
+		case "$2" in
+			(snp) __add snp "$3";;
+			(sync) __add sync "$3";;
+			("") __add;;
+			(*) echo "Invalid argument. See $0 help or $0 -h for more information.";;
+		esac		
+	;;
+
+	(dependencies|-D) __list_dependencies;;
+
+	(disable|-d)
+		case "$2" in 
+			(snp) __disable snp "$3";;
+			(sync) __disable sync "$3";;
+			("") __disable;;
+			(*) echo "Invalid argument. See $0 help or $0 -h for more information.";;
+		esac		
+	;;
+
+	(enable|-e)
+		case "$2" in 
+			(snp) __enable snp "$3";;
+			(sync) __enable sync "$3";;
+			("") __enable;;
+			(*) echo "Invalid argument. See $0 help or $0 -h for more information.";;
+		esac		
+	;;
+
+	(fix-permissions|-f) __fix_permissions;;
+
+	(install|-i) __install_dependencies;;
+
+	(list|-l)
+		case "$2" in 
+			(snp) __list "all" "snp";;
+			(sync) __list "all" "sync";;
+			(all) __list "all" "all";;
+			("") __list;;
+			(*) echo "Invalid argument. See $0 help or $0 -h for more information.";;			
+		esac	
+	;;
+
+	(remove|-r)
+		case "$2" in 
+			(snp) __remove snp "$3";;
+			(sync) __remove sync "$3";;
+			("") __remove;;
+			(*) echo "Invalid argument. See $0 help or $0 -h for more information.";;
+		esac		
+	;;
+
+	(uninstall|-u) __uninstall_dependencies;;
+
+	(view|-v)
+		case "$2" in 
+			(snp) __view snp "$3";;
+			(sync) __view sync "$3";;
+			("") __view;;
+			(*) echo "Invalid argument. See $0 help or $0 -h for more information.";;
+		esac		
+	;;
+
+	(help|-h|*|"") __help;;
+esac
