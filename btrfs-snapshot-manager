@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #
-#	This script is used to create and manage sheduled btrfs snapshots and sheduled btrfs snapshot synchronisation.
+#	This script is used to create and manage scheduled btrfs snapshots and scheduled btrfs snapshot synchronisation.
 #	It serves as a frontend to nachoparkers scripts but has limited options:
 #	The frequency and retention of snapshots is predefined to 24 hourly, 7 daily, 4 weekly and 12 monthly snapshots.
 #	Snapshots that don't exist in the source directory will be deleted from the destination directory.
@@ -27,7 +27,7 @@ timestamp_script=/usr/local/bin/timestamp #default ist /usr/local/bin/timestamp
 if [[ "$EUID" -ne 0 ]]; then
 	echo ""
 	echo "This script must be run as root." 
-	echo "Otherwise the sheduled snapshot jobs cannot be created."
+	echo "Otherwise the scheduled snapshot jobs cannot be created."
 	echo ""
 	exit 1
 fi
@@ -68,21 +68,21 @@ __add ()
 	type_name="$(__get_type_name "$type")"
 	
 	#Perform checks and then add the job
-	if [[ -f "/etc/cron.d/$tag-sheduled-$type" ]]
+	if [[ -f "/etc/cron.d/$tag-scheduled-$type" ]]
 	then
-		echo "A sheduled snapshot $type_name job with this tag already exists."
+		echo "A scheduled snapshot $type_name job with this tag already exists."
 		return 1
 		
-	elif [[ -f "/etc/cron.d/$tag-sheduled-$type.disabled" ]]
+	elif [[ -f "/etc/cron.d/$tag-scheduled-$type.disabled" ]]
 	then
-		echo "A disabled sheduled $type_name job with this tag already exists."
+		echo "A disabled scheduled $type_name job with this tag already exists."
 		read -p 'Do you want to enable it? (y/n)' -n 1 -r
 		echo ""
 		
 		if [[ "$REPLY" =~ ^^[Yy]$ ]]
 		then
-			sed -i '1,5 s/^#//' "/etc/cron.d/$tag-sheduled-$type.disabled" #remove one # in front of every line
-			mv "/etc/cron.d/$tag-sheduled-$type.disabled" "/etc/cron.d/$tag-sheduled-$type"
+			sed -i '1,5 s/^#//' "/etc/cron.d/$tag-scheduled-$type.disabled" #remove one # in front of every line
+			mv "/etc/cron.d/$tag-scheduled-$type.disabled" "/etc/cron.d/$tag-scheduled-$type"
 			echo "Snapshot $type_name job \"$tag\" enabled."
 			return 0
 			
@@ -108,7 +108,7 @@ type="$1"
 tag="$2"
 
 echo "Please make sure that the source directory is in a BTRFS"
-read -e -p 'Select source directory for the sheduled snapshot creation job: ' snpsource
+read -e -p 'Select source directory for the scheduled snapshot creation job: ' snpsource
 snpsource="${snpsource%/}"
 
 if __check_fs "$snpsource"
@@ -120,7 +120,7 @@ then
 	if __check_fs "$snpdest"
 	then
 
-		cat > "/etc/cron.d/$tag-sheduled-$type" <<-EOF
+		cat > "/etc/cron.d/$tag-scheduled-$type" <<-EOF
 #from $snpsource
 #to $snpdest/$tag-snp
 0 * * * * root $script_dir/btrfs-snp $snpsource $tag-hourly  24 3600     $snpdest/$tag-snp 2>&1 | $timestamp_script >> $log_dir/$tag-creation.log
@@ -128,16 +128,16 @@ then
 0 * * * * root $script_dir/btrfs-snp $snpsource $tag-weekly   4 604800   $snpdest/$tag-snp 2>&1 | $timestamp_script >> $log_dir/$tag-creation.log
 0 * * * * root $script_dir/btrfs-snp $snpsource $tag-monthly 12 2592000  $snpdest/$tag-snp 2>&1 | $timestamp_script >> $log_dir/$tag-creation.log
 		EOF
-		chmod +x "/etc/cron.d/$tag-sheduled-$type"
+		chmod +x "/etc/cron.d/$tag-scheduled-$type"
 		
-		if [[ -f "/etc/cron.d/$tag-sheduled-$type" ]]
+		if [[ -f "/etc/cron.d/$tag-scheduled-$type" ]]
 		then
-			echo "Added the sheduled snapshot $type_name job \"$tag\":"
-			echo "/etc/cron.d/$tag-sheduled-$type"
+			echo "Added the scheduled snapshot $type_name job \"$tag\":"
+			echo "/etc/cron.d/$tag-scheduled-$type"
 			return 0
 		else
-			echo "Could not add the sheduled snapshot $type_name job \"$tag\":"
-			echo "/etc/cron.d/$tag-sheduled-$type"
+			echo "Could not add the scheduled snapshot $type_name job \"$tag\":"
+			echo "/etc/cron.d/$tag-scheduled-$type"
 			return 1
 		fi
 	else
@@ -154,21 +154,21 @@ __add_sync () #add the snapshot synchronisation job with tag
 type="$1"
 tag="$2"
 
-if [[ -f "/etc/cron.d/$tag-sheduled-snp" ]] #check if the specified snapshot creation job really exists
+if [[ -f "/etc/cron.d/$tag-scheduled-snp" ]] #check if the specified snapshot creation job really exists
 then
-	snplocation="$(awk -v line=2 'NR == line {print $2; exit}' /etc/cron.d/$tag-sheduled-snp)"
+	snplocation="$(awk -v line=2 'NR == line {print $2; exit}' /etc/cron.d/$tag-scheduled-snp)"
 	ed="enabled"
 	
-elif [[ -f "/etc/cron.d/$tag-sheduled-snp.disabled" ]]
+elif [[ -f "/etc/cron.d/$tag-scheduled-snp.disabled" ]]
 then
-	snplocation="$(awk -v line=2 'NR == line {print $2; exit}' /etc/cron.d/$tag-sheduled-snp.disabled)"
+	snplocation="$(awk -v line=2 'NR == line {print $2; exit}' /etc/cron.d/$tag-scheduled-snp.disabled)"
 	ed="disabled"
 	
 else
 	echo "This snapshot creation job does not exist."
 	return 1
 fi
-	echo "Creating a sheduled synchronisation job for this $ed snapshot creation job: $tag"
+	echo "Creating a scheduled synchronisation job for this $ed snapshot creation job: $tag"
 	echo "The snapshot it creates are stored here:"
 	echo "$snplocation"
 	
@@ -184,7 +184,7 @@ syncdest="${syncdest%/}"
 if __check_fs "$syncdest"
 then
 	entries=0
-	for entry  in /etc/cron.d/*-sheduled-sync
+	for entry  in /etc/cron.d/*-scheduled-sync
 	do
 	[ -e "$entry" ] || continue
 	entries=$((entries + 1))
@@ -217,20 +217,20 @@ then
 		fi
 	done
 	
-	cat > "/etc/cron.d/$tag-sheduled-$type" <<-EOF
+	cat > "/etc/cron.d/$tag-scheduled-$type" <<-EOF
 #from $snplocation
 #to $syncdest
 30  $start_hour  */${syncinterval}  *  *  root  $script_dir/btrfs-sync -dv "$snplocation" "$syncdest" 2>&1 | $timestamp_script >> $log_dir/$tag-sync.log
 	EOF
-	chmod +x "/etc/cron.d/$tag-sheduled-$type"
+	chmod +x "/etc/cron.d/$tag-scheduled-$type"
 	service cron restart
 	
-	if [[ -f "/etc/cron.d/$tag-sheduled-$type" ]]
+	if [[ -f "/etc/cron.d/$tag-scheduled-$type" ]]
 	then
-		echo "Added the sheduled snapshot $type_name job \"$tag\": /etc/cron.d/$tag-sheduled-$type"
+		echo "Added the scheduled snapshot $type_name job \"$tag\": /etc/cron.d/$tag-scheduled-$type"
 		return 0
 	else
-		echo "Could not add the sheduled snapshot $type_name job \"$tag\": /etc/cron.d/$tag-sheduled-$type"
+		echo "Could not add the scheduled snapshot $type_name job \"$tag\": /etc/cron.d/$tag-scheduled-$type"
 		return 1
 	fi
 fi
@@ -253,7 +253,7 @@ __check_fs () #checks whether the directory exists and is in a btrfs
 		fi
 }
 
-__disable () #disables a sheduled snapshot job based on user input
+__disable () #disables a scheduled snapshot job based on user input
 {
 	if [[ -z "$1" ]]
 	then
@@ -301,19 +301,19 @@ __disable () #disables a sheduled snapshot job based on user input
 	
 	type_name="$(__get_type_name "$type")"
 		
-	if [[ -f "/etc/cron.d/$tag-sheduled-$type" ]] #if an enabled version exists
+	if [[ -f "/etc/cron.d/$tag-scheduled-$type" ]] #if an enabled version exists
 	then
-		echo "Disabling sheduled $type_name job \"$tag\"."
+		echo "Disabling scheduled $type_name job \"$tag\"."
 		if __get_confirmation
 		then
-			sed -i '1,5 s/^/#/' "/etc/cron.d/$tag-sheduled-$type" #add a # to every line of the crontab job
-			mv "/etc/cron.d/$tag-sheduled-$type" "/etc/cron.d/$tag-sheduled-$type.disabled"
+			sed -i '1,5 s/^/#/' "/etc/cron.d/$tag-scheduled-$type" #add a # to every line of the crontab job
+			mv "/etc/cron.d/$tag-scheduled-$type" "/etc/cron.d/$tag-scheduled-$type.disabled"
 			echo "Snapshot $type_name job \"$tag\" disabled."
 			return 0
 		else
 			return 1
 		fi
-	elif [[ -f "/etc/cron.d/$tag-sheduled-$type.disabled" ]]
+	elif [[ -f "/etc/cron.d/$tag-scheduled-$type.disabled" ]]
 	then
 		echo "Snapshot $type_name job \"$tag\" already disabled."
 		return 1
@@ -323,7 +323,7 @@ __disable () #disables a sheduled snapshot job based on user input
 	fi
 }
 
-__enable () #enables a sheduled snapshot job based on user input
+__enable () #enables a scheduled snapshot job based on user input
 {
 	if [[ -z "$1" ]]
 	then
@@ -372,20 +372,20 @@ __enable () #enables a sheduled snapshot job based on user input
 	fi
 	
 	
-	if [[ -f "/etc/cron.d/$tag-sheduled-$type.disabled" ]] #if a disabled version exists
+	if [[ -f "/etc/cron.d/$tag-scheduled-$type.disabled" ]] #if a disabled version exists
 	then
-		echo "Enabling sheduled $type_name job \"$tag\"."
+		echo "Enabling scheduled $type_name job \"$tag\"."
 		
 		if __get_confirmation
 		then
-			sed -i '1,5 s/^#//' "/etc/cron.d/$tag-sheduled-$type.disabled" #remove one # in front of every line
-			mv "/etc/cron.d/$tag-sheduled-$type.disabled" "/etc/cron.d/$tag-sheduled-$type"
+			sed -i '1,5 s/^#//' "/etc/cron.d/$tag-scheduled-$type.disabled" #remove one # in front of every line
+			mv "/etc/cron.d/$tag-scheduled-$type.disabled" "/etc/cron.d/$tag-scheduled-$type"
 			echo "Snapshot $type_name job \"$tag\" enabled."
 			return 0
 		else
 			return 1
 		fi
-	elif [[ -f "/etc/cron.d/$tag-sheduled-$type" ]]
+	elif [[ -f "/etc/cron.d/$tag-scheduled-$type" ]]
 	then
 		echo "Snapshot $type_name job \"$tag\" already enabled."
 		return 1
@@ -395,14 +395,14 @@ __enable () #enables a sheduled snapshot job based on user input
 	fi
 }
 
-__fix_permissions () #making the sheduled snapshot job scripts in /etc/cron.d/ executable
+__fix_permissions () #making the scheduled snapshot job scripts in /etc/cron.d/ executable
 {
 	echo "Executing chmod +x on all created snapshot jobs in /etc/cron.d/"
 	
 	if __get_confirmation
 	then
-		chmod +x "/etc/cron.d/*-sheduled-snp*"
-		chmod +x "/etc/cron.d/*-sheduled-sync*"
+		chmod +x "/etc/cron.d/*-scheduled-snp*"
+		chmod +x "/etc/cron.d/*-scheduled-sync*"
 		return 0
 	else
 		return 1
@@ -428,7 +428,7 @@ __get_tag () #Ask the user for a snapshot job tag. If needed, it will list all s
 	read -e -p "Please input a tag: " tag
 	echo "$tag"
 	
-	#if [[ -f "/etc/cron.d/$tag-sheduled-*" ]]
+	#if [[ -f "/etc/cron.d/$tag-scheduled-*" ]]
 	#then
 	#	echo "A snapshot job with this tag already exists."
 	#	echo ""
@@ -489,7 +489,7 @@ __get_type_name () #provides other functions with the correct string for the mes
 #
 __help () 
 {
-	echo "This script lets you create and manage cron-jobs for sheduled creation and synchronisation of btrfs-snapshots."
+	echo "This script lets you create and manage cron-jobs for scheduled creation and synchronisation of btrfs-snapshots."
 	echo "Usage: snapshot-manager [options] [snp|sync|all [tag]]"
 	echo ""
 	echo "Example:" 
@@ -747,14 +747,14 @@ __list_enabled ()
 #list all enabled jobs. Takes snp, sync and all as argument
 __list_enabled_snp () #done.
 {
-	if compgen -G "/etc/cron.d/*-sheduled-snp" > /dev/null 2>&1
+	if compgen -G "/etc/cron.d/*-scheduled-snp" > /dev/null 2>&1
 	then
 		echo "Enabled snapshot creation jobs:"
 	
-		for entry in /etc/cron.d/*-sheduled-snp
+		for entry in /etc/cron.d/*-scheduled-snp
 		do
 			#remove everything but the tag
-			echo "$entry" | cut -d'/' -f4- | sed 's/\-sheduled-snp//g'
+			echo "$entry" | cut -d'/' -f4- | sed 's/\-scheduled-snp//g'
 		done
 		echo ""
 		return 0
@@ -766,14 +766,14 @@ __list_enabled_snp () #done.
 #list all enabled jobs. Takes snp, sync and all as argument
 __list_enabled_sync () #done.
 {
-	if compgen -G "/etc/cron.d/*-sheduled-sync" > /dev/null 2>&1
+	if compgen -G "/etc/cron.d/*-scheduled-sync" > /dev/null 2>&1
 	then
 		echo "Enabled snapshot synchronisation jobs:"
 	
-		for entry in /etc/cron.d/*-sheduled-sync
+		for entry in /etc/cron.d/*-scheduled-sync
 		do
 			#remove everything but the tag
-			echo "$entry" | cut -d'/' -f4- | sed 's/\-sheduled-sync//g'
+			echo "$entry" | cut -d'/' -f4- | sed 's/\-scheduled-sync//g'
 		done
 		echo ""
 		return 0
@@ -853,14 +853,14 @@ __list_disabled ()
 __list_disabled_snp () #done.
 {
 	
-	if compgen -G "/etc/cron.d/*-sheduled-snp.disabled" > /dev/null 2>&1
+	if compgen -G "/etc/cron.d/*-scheduled-snp.disabled" > /dev/null 2>&1
 	then
 		echo "Disabled snapshot creation jobs:"
 
-		for entry in /etc/cron.d/*-sheduled-snp.disabled
+		for entry in /etc/cron.d/*-scheduled-snp.disabled
 		do
 			#remove everything but the tag
-			echo "$entry" | cut -d'/' -f4- | sed 's/\-sheduled-snp.disabled//g'
+			echo "$entry" | cut -d'/' -f4- | sed 's/\-scheduled-snp.disabled//g'
 		done
 		echo ""
 		return  0
@@ -872,14 +872,14 @@ __list_disabled_snp () #done.
 __list_disabled_sync () #done.
 {
 			
-	if compgen -G "/etc/cron.d/*-sheduled-sync.disabled" > /dev/null 2>&1
+	if compgen -G "/etc/cron.d/*-scheduled-sync.disabled" > /dev/null 2>&1
 	then
 		echo "Disabled snapshot synchronisation jobs:"
 
-		for entry in /etc/cron.d/*-sheduled-sync.disabled
+		for entry in /etc/cron.d/*-scheduled-sync.disabled
 		do
 			#remove everything but the tag
-			echo "$entry" | cut -d'/' -f4- | sed 's/\-sheduled-sync.disabled//g'
+			echo "$entry" | cut -d'/' -f4- | sed 's/\-scheduled-sync.disabled//g'
 		done
 		echo ""
 		return 0
@@ -929,7 +929,7 @@ __remove ()
 	then
 		if __list_all "all"
 		then
-			echo "Choose the type and tag of a sheduled snapshot job you want to remove."
+			echo "Choose the type and tag of a scheduled snapshot job you want to remove."
 			type="$(__get_type "snp|sync")"
 			tag="$(__get_tag "$type")"
 		else
@@ -939,48 +939,48 @@ __remove ()
 
 	type_name="$(__get_type_name "$type")"
 	
-	if [[ -f "/etc/cron.d/$tag-sheduled-$type" ]]
+	if [[ -f "/etc/cron.d/$tag-scheduled-$type" ]]
 	then
-		echo "Removing the enabled sheduled snapshot $type_name job \"$tag\"." 
+		echo "Removing the enabled scheduled snapshot $type_name job \"$tag\"." 
 		echo "This cannot be undone."
 		
 		if ! __get_confirmation
 		then
 			return 1
 		fi
-		rm -f "/etc/cron.d/$tag-sheduled-$type"
+		rm -f "/etc/cron.d/$tag-scheduled-$type"
 		service cron restart
 		
-		if ! [[ -f "/etc/cron.d/$tag-sheduled-$type" ]]
+		if ! [[ -f "/etc/cron.d/$tag-scheduled-$type" ]]
 		then
-			echo "Removed the sheduled snapshot $type_name job \"$tag\"."
-			echo "(Was in /etc/cron.d/$tag-sheduled-$type)"
+			echo "Removed the scheduled snapshot $type_name job \"$tag\"."
+			echo "(Was in /etc/cron.d/$tag-scheduled-$type)"
 		else
-			echo "Could not remove the sheduled snapshot $type_name job \"$tag\"."
-			echo "Is in /etc/cron.d/$tag-sheduled-$type"
+			echo "Could not remove the scheduled snapshot $type_name job \"$tag\"."
+			echo "Is in /etc/cron.d/$tag-scheduled-$type"
 		fi
 		
-	elif [[ -f "/etc/cron.d/$tag-sheduled-$type.disabled" ]]
+	elif [[ -f "/etc/cron.d/$tag-scheduled-$type.disabled" ]]
 	then
-		echo "Removing the disabled sheduled snapshot $type_name job \"$tag\"." 
+		echo "Removing the disabled scheduled snapshot $type_name job \"$tag\"." 
 		echo "This cannot be undone."
 		if ! __get_confirmation
 		then
 			return 1
 		fi
-		rm -f "/etc/cron.d/$tag-sheduled-$type.disabled"
+		rm -f "/etc/cron.d/$tag-scheduled-$type.disabled"
 		service cron restart
 		
-		if ! [[ -f "/etc/cron.d/$tag-sheduled-$type.disabled" ]]
+		if ! [[ -f "/etc/cron.d/$tag-scheduled-$type.disabled" ]]
 		then
-			echo "Removed the sheduled snapshot $type_name job \"$tag\"."
-			echo "(Was in /etc/cron.d/$tag-sheduled-$type.disabled)"
+			echo "Removed the scheduled snapshot $type_name job \"$tag\"."
+			echo "(Was in /etc/cron.d/$tag-scheduled-$type.disabled)"
 		else
-			echo "Could not remove the sheduled snapshot $type_name job \"$tag\"."
-			echo "Is in /etc/cron.d/$tag-sheduled-$type"
+			echo "Could not remove the scheduled snapshot $type_name job \"$tag\"."
+			echo "Is in /etc/cron.d/$tag-scheduled-$type"
 		fi
 	else
-		echo "This sheduled snapshot $type_name job doesn't exist."
+		echo "This scheduled snapshot $type_name job doesn't exist."
 		return 1
 	fi
 }
@@ -1114,20 +1114,20 @@ __view ()
 	
 	type_name="$(__get_type_name "$type")"
 	
-	if [[ -f "/etc/cron.d/$tag-sheduled-$type" ]]
+	if [[ -f "/etc/cron.d/$tag-scheduled-$type" ]]
 	then
-		echo "This sheduled snapshot $type_name job is enabled and located here:"
-		echo "/etc/cron.d/$tag-sheduled-$type"
+		echo "This scheduled snapshot $type_name job is enabled and located here:"
+		echo "/etc/cron.d/$tag-scheduled-$type"
 		echo "Content of this file:"
-		cat "/etc/cron.d/$tag-sheduled-$type"
-	elif [[ -f "/etc/cron.d/$tag-sheduled-$type.disabled" ]]
+		cat "/etc/cron.d/$tag-scheduled-$type"
+	elif [[ -f "/etc/cron.d/$tag-scheduled-$type.disabled" ]]
 	then
-		echo "This sheduled snapshot $type_name job is disabled and located here:"
-		echo "/etc/cron.d/$tag-sheduled-$type.disabled"
+		echo "This scheduled snapshot $type_name job is disabled and located here:"
+		echo "/etc/cron.d/$tag-scheduled-$type.disabled"
 		echo "Content of this file:"
-		cat "/etc/cron.d/$tag-sheduled-$type.disabled"
+		cat "/etc/cron.d/$tag-scheduled-$type.disabled"
 	else
-		echo "This sheduled snapshot job does not exist."
+		echo "This scheduled snapshot job does not exist."
 	fi
 }
 
