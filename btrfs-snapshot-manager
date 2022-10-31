@@ -493,7 +493,7 @@ __help ()
 	echo "Usage: snapshot-manager [options] [snp|sync|all [tag]]"
 	echo ""
 	echo "Example:" 
-	echo "snapshot-manager -d sync backup"
+	echo "$0 -d sync backup"
 	echo "(Disable snapshot synchronisation job with the tag 'backup')"
 	echo ""
 	echo "Options:"
