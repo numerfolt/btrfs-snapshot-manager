@@ -32,9 +32,10 @@ if [[ "$EUID" -ne 0 ]]; then
 	exit 1
 fi
 
+#This function is used to add a snapshot creation or synchronisation job.
 __add () 
 {
-	#Preparation
+	#This finds out which job type should be added
 	if [[ "$1" = "sync" ]]
 	then
 		type="${1}"
@@ -73,7 +74,7 @@ __add ()
 		echo "A scheduled snapshot $type_name job with this tag already exists."
 		return 1
 		
-	elif [[ -f "/etc/cron.d/$tag-scheduled-$type.disabled" ]]
+	elif [[ -f "/etc/cron.d/$tag-scheduled-$type.disabled" ]] #Offer to enable a disabled snapshot job
 	then
 		echo "A disabled scheduled $type_name job with this tag already exists."
 		read -p 'Do you want to enable it? (y/n)' -n 1 -r
@@ -101,6 +102,7 @@ __add ()
 	fi
 }
 
+#This function adds a snapshot creation job based on the arguments provided by previous functions or direct input
 __add_snp ()
 {
 
@@ -127,7 +129,7 @@ then
 0 * * * * root $script_dir/btrfs-snp $snpsource $tag-daily    7 86400   $snpdest/$tag-snp 2>&1 | $timestamp_script >> $log_dir/$tag-creation.log
 0 * * * * root $script_dir/btrfs-snp $snpsource $tag-weekly   4 604800   $snpdest/$tag-snp 2>&1 | $timestamp_script >> $log_dir/$tag-creation.log
 0 * * * * root $script_dir/btrfs-snp $snpsource $tag-monthly 12 2592000  $snpdest/$tag-snp 2>&1 | $timestamp_script >> $log_dir/$tag-creation.log
-		EOF
+EOF
 		chmod +x "/etc/cron.d/$tag-scheduled-$type"
 		
 		if [[ -f "/etc/cron.d/$tag-scheduled-$type" ]]
@@ -148,13 +150,15 @@ else
 fi
 }
  
-__add_sync () #add the snapshot synchronisation job with tag
+#This function adds a snapshot synchronisation job based on the arguments passed by previous functions or direct input
+__add_sync ()
 {
 
 type="$1"
 tag="$2"
 
-if [[ -f "/etc/cron.d/$tag-scheduled-snp" ]] #check if the specified snapshot creation job really exists
+#Perform multiple checks to cover all possible constellations
+if [[ -f "/etc/cron.d/$tag-scheduled-snp" ]]
 then
 	snplocation="$(awk -v line=2 'NR == line {print $2; exit}' /etc/cron.d/$tag-scheduled-snp)"
 	ed="enabled"
@@ -221,7 +225,7 @@ then
 #from $snplocation
 #to $syncdest
 30  $start_hour  */${syncinterval}  *  *  root  $script_dir/btrfs-sync -dv "$snplocation" "$syncdest" 2>&1 | $timestamp_script >> $log_dir/$tag-sync.log
-	EOF
+EOF
 	chmod +x "/etc/cron.d/$tag-scheduled-$type"
 	service cron restart
 	
@@ -327,6 +331,7 @@ __enable () #enables a scheduled snapshot job based on user input
 {
 	if [[ -z "$1" ]]
 	then
+		#List only the needed types of snapshot jobs
 		if __list_disabled "all" > /dev/null 2>&1
 		then
 			if __list_disabled_snp > /dev/null 2>&1 && __list_disabled_sync > /dev/null 2>&1
@@ -371,8 +376,8 @@ __enable () #enables a scheduled snapshot job based on user input
 		tag="$2"
 	fi
 	
-	
-	if [[ -f "/etc/cron.d/$tag-scheduled-$type.disabled" ]] #if a disabled version exists
+	#Uses the type and tag gathered above to enable a snapshot job
+	if [[ -f "/etc/cron.d/$tag-scheduled-$type.disabled" ]]
 	then
 		echo "Enabling scheduled $type_name job \"$tag\"."
 		
@@ -427,24 +432,10 @@ __get_tag () #Ask the user for a snapshot job tag. If needed, it will list all s
 {	
 	read -e -p "Please input a tag: " tag
 	echo "$tag"
-	
-	#if [[ -f "/etc/cron.d/$tag-scheduled-*" ]]
-	#then
-	#	echo "A snapshot job with this tag already exists."
-	#	echo ""
-	#	__get_tag
-	#	
-	#elif [[ "$tag" = " There are no enabled snapshot creation jobs." || "$tag" = " There are no enabled snapshot synchronisation jobs." || "$tag" = " There are no disabled snapshot creation jobs." || "$tag" = " There are no disabled snapshot creation jobs." ]]
-	#then
-	#	echo "This tag is not available."
-	#	
-	#else
-	#	echo "$tag"
-	#fi
 }
 
 
-__get_type () #Ask the user for a snapshot job type. Accepts the arguments 'snp|sync|all' and 'snp|sync'
+__get_type () #Ask the user for a snapshot job type depending on the context it is called in
 {
 	if [[ "$1" = "snp|sync|all" ]]
 	then
@@ -486,7 +477,7 @@ __get_type_name () #provides other functions with the correct string for the mes
 	esac
 }
 
-#
+#The help function listing all available options
 __help () 
 {
 	echo "This script lets you create and manage cron-jobs for scheduled creation and synchronisation of btrfs-snapshots."
@@ -601,13 +592,13 @@ while IFS= read -r line
 do
 printf '%s %s %s\n' "$(date +"%Y-%m-%d %T")" "-"  "$line"
 done
-	EOF
+EOF
 	chmod +x "$timestamp_script"
 	echo "Installed timestamp"
 	return 0
 }
 
-__list () 
+__list () #Parent function for snapshot job listing. Calls the other list functions as needed
 {
 	if [[ -z "$2" ]]
 	then
@@ -627,7 +618,7 @@ __list ()
 	fi
 }
 
-__list_all () 
+__list_all () #Lists enabled and disabled snapshot jobs
 {
 	if [[ "$1" = "snp" ]]
 	then
@@ -652,7 +643,7 @@ __list_all ()
 }
 
 
-__list_all_snp ()
+__list_all_snp () #list all snapshot creation jobs
 {
 	if __list_enabled_snp > /dev/null 2>&1 && __list_disabled_snp > /dev/null 2>&1
 	then
@@ -675,7 +666,7 @@ __list_all_snp ()
 	fi
 }
 
-__list_all_sync ()
+__list_all_sync () #list all snapshot synchronisation jobs
 {
 	if __list_enabled_sync > /dev/null 2>&1 && __list_disabled_sync > /dev/null 2>&1
 	then
@@ -698,7 +689,7 @@ __list_all_sync ()
 	fi
 }
 
-__list_enabled ()
+__list_enabled () #Parent function for listing enabled jobs
 {
 	if [[ "$1" = "snp" ]]
 	then
@@ -744,8 +735,7 @@ __list_enabled ()
 	fi
 }
 
-#list all enabled jobs. Takes snp, sync and all as argument
-__list_enabled_snp () #done.
+__list_enabled_snp () #list all enabled snapshot creation jobs
 {
 	if compgen -G "/etc/cron.d/*-scheduled-snp" > /dev/null 2>&1
 	then
@@ -763,8 +753,7 @@ __list_enabled_snp () #done.
 	fi
 }
 
-#list all enabled jobs. Takes snp, sync and all as argument
-__list_enabled_sync () #done.
+__list_enabled_sync () #list all enabled snapshot synchronisation jobs
 {
 	if compgen -G "/etc/cron.d/*-scheduled-sync" > /dev/null 2>&1
 	then
@@ -782,8 +771,7 @@ __list_enabled_sync () #done.
 	fi
 }
 
-#Output the Dependencies of this script and more information or where to find it
-__list_dependencies () #done.
+__list_dependencies () #Output the Dependencies of this script and more information or where to find it
 {
 	echo "Dependencies:"
 	echo "- cron"
@@ -803,7 +791,7 @@ __list_dependencies () #done.
 	echo ""
 }
 
-__list_disabled ()
+__list_disabled () #Parent function for listing disabled snapshot jobs
 {
 	if [[ "$1" = "snp" ]]
 	then
@@ -849,8 +837,7 @@ __list_disabled ()
 	fi
 }
 
-#list all disabled jobs. Takes snp, sync and all as argument
-__list_disabled_snp () #done.
+__list_disabled_snp () #List all disabled snapshot creation jobs
 {
 	
 	if compgen -G "/etc/cron.d/*-scheduled-snp.disabled" > /dev/null 2>&1
@@ -869,7 +856,7 @@ __list_disabled_snp () #done.
 	fi
 }
 
-__list_disabled_sync () #done.
+__list_disabled_sync () #List all disabled snapshot synchronisation jobs
 {
 			
 	if compgen -G "/etc/cron.d/*-scheduled-sync.disabled" > /dev/null 2>&1
@@ -889,7 +876,7 @@ __list_disabled_sync () #done.
 }
 
 
-__remove ()
+__remove () #Remove a snapshot job. Lists them if necessary
 {
 	if [[ "$1" = "sync" ]]
 	then
@@ -985,7 +972,7 @@ __remove ()
 	fi
 }
 
-__uninstall_dependencies ()
+__uninstall_dependencies () #Remove the scripts that were installed by this script
 {
 	if [[ -f "$script_dir/btrfs-snp" ]]
 	then
@@ -1066,7 +1053,7 @@ __uninstall_dependencies ()
 	fi
 }
 
-__view ()
+__view () #Show the content of a specified snapshot job
 {
 	if [[ "$1" = "sync" ]]
 	then
@@ -1131,6 +1118,7 @@ __view ()
 	fi
 }
 
+#Executes the functions based on user input
 case "$1" in
 	(add|-a) 	
 		case "$2" in
